@@ -1,9 +1,4 @@
 rules:
-  unpinned-uses:
-    config:
-      policies:
-        actions/*: ref-pin
-        bowtie-json-schema/bowtie: ref-pin
   dependabot-cooldown:
     config:
       days: 3

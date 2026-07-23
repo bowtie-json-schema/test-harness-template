@@ -1,122 +1,51 @@
-name: Build Bowtie Image for all available versions
+# Rebuild and publish every historical version of this harness.
+#
+# Versions are git tags (`harness-release-*`, created automatically by build.yml) plus the current `main`.
+# Each is (re)built and published through Bowtie's reusable `harness-ci.yml` workflow.
+# Run this manually to backfill images, e.g. right after extracting a harness that had a `matrix-versions.json`.
+name: Build All Versions
 
 on:
   workflow_dispatch:
-
-env:
-  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
 
 permissions: {}
 
 jobs:
   versions:
+    name: Collect available versions
     runs-on: ubuntu-latest
     outputs:
       revisions: ${{ steps.revisions.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+
       - name: Collect available versions
         id: revisions
         run: |
-          tags=$(jq -c -n '$ARGS.positional + ["main"]' --args $(git tag --list))
-          echo "value=$(echo $tags | jq -c .)" >> $GITHUB_OUTPUT
+          # Only the auto-created per-version release tags, plus current `main`.
+          tags=$(jq -c -n '$ARGS.positional + ["main"]' --args $(git tag --list 'harness-release-*'))
+          echo "value=${tags}" >> "$GITHUB_OUTPUT"
 
   build:
+    name: Build
     needs: versions
-    runs-on: ubuntu-latest
     strategy:
-      fail-fast: true
+      # Backfill as many versions as possible; don't abort the rest on one failure.
+      fail-fast: false
       matrix:
         revision: ${{ fromJson(needs.versions.outputs.revisions) }}
     permissions:
-      id-token: write
-      contents: read
-      attestations: write
-      packages: write
-      artifact-metadata: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          ref: ${{ matrix.revision }}
-
-      - name: Compute implementation name
-        id: impl
-        env:
-          GH_REPOSITORY: ${{ github.repository }}
-        run: echo "name=$(echo ${GH_REPOSITORY} | awk -F '/' '{print $2}')" >> $GITHUB_OUTPUT
-
-      - name: Install bowtie
-        uses: bowtie-json-schema/bowtie@main
-
-      - name: Build
-        id: build_image
-        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2.13
-        with:
-          context: '.'
-          containerfiles: |
-            Dockerfile
-          image: ${{ steps.impl.outputs.name }}
-          tags: ${{ github.sha }} ${{ matrix.revision == 'main' && 'latest' || '' }}
-          archs: amd64, arm64
-
-      - name: Set DOCKER_HOST so podman-built images are findable
-        run: |
-          systemctl --user enable --now podman.socket
-          sudo loginctl enable-linger $USER
-          podman --remote info
-          echo "DOCKER_HOST=unix://$(podman info --format '{{.Host.RemoteSocket.Path}}')" >> $GITHUB_ENV
-
-      - name: Smoke Test
-        env:
-          IMAGE_WITH_TAG: ${{ steps.build_image.outputs.image-with-tag }}
-        run: |
-          bowtie smoke -i "localhost/${IMAGE_WITH_TAG}" --format json
-          bowtie smoke -i "localhost/${IMAGE_WITH_TAG}" --format markdown >> $GITHUB_STEP_SUMMARY
-
-      - name: Collect current version
-        id: current-version
-        env:
-          IMAGE_WITH_TAG: ${{ steps.build_image.outputs.image-with-tag }}
-        run: |
-          version=$(bowtie info \
-              --implementation "localhost/${IMAGE_WITH_TAG}" \
-              --format json | jq -r '.version // empty')
-          echo "value=${version}" >> $GITHUB_OUTPUT
-
-      - name: Print collected version
-        env:
-          CURRENT_VERSION: ${{ steps.current-version.outputs.value }}
-        run: echo "current_version=${CURRENT_VERSION}"
-
-      - name: Log in to ghcr.io
-        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 # v1.7
-        with:
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-          registry: ${{ env.IMAGE_REGISTRY }}
-
-      - name: Add tag with version to the image
-        env:
-          IMAGE_WITH_TAG: ${{ steps.build_image.outputs.image-with-tag }}
-          IMAGE_WITH_VERSION: "${{ steps.build_image.outputs.image }}:${{ steps.current-version.outputs.value }}"
-        run: podman tag ${IMAGE_WITH_TAG} ${IMAGE_WITH_VERSION}
-
-      - name: Publish
-        id: push
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2.8
-        with:
-          image: ${{ steps.build_image.outputs.image }}
-          tags: ${{ steps.current-version.outputs.value }} ${{ steps.build_image.outputs.tags }}
-          registry: ${{ env.IMAGE_REGISTRY }}
-
-      - name: Generate attestation for images
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ env.IMAGE_REGISTRY }}/${{ steps.build_image.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+      id-token: write # needed for build provenance attestation
+      contents: read # needed for actions/checkout
+      attestations: write # needed for build provenance attestation
+      packages: write # needed for pushing to ghcr.io
+      artifact-metadata: write # needed for build provenance attestation
+    uses: bowtie-json-schema/bowtie/.github/workflows/harness-ci.yml@a0ae283dca0a0d0eb2381a886d5499162f33c82a # main
+    with:
+      ref: ${{ matrix.revision }}
+      publish: true
+      is-latest: ${{ matrix.revision == 'main' }}
