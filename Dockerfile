@@ -1,12 +1,9 @@
-FROM --platform=$BUILDPLATFORM gradle:9.6.1-jdk17 AS builder
-WORKDIR /opt/app
-COPY gradle/libs.versions.toml gradle/
-COPY settings.gradle.kts .
-COPY build.gradle.kts .
-RUN gradle --no-daemon --parallel dependencies > /dev/null
-COPY src/ src/
-RUN gradle --no-daemon --parallel install
-
-FROM bellsoft/liberica-openjdk-alpine:25
-COPY --from=builder /opt/app/build /opt/app/build
-CMD ["/opt/app/build/install/kmp-json-schema-validator/bin/kmp-json-schema-validator"]
+# Replace this with your harness's build.
+#
+# The only contract: the final image, when run, must execute a program that speaks the Bowtie test harness protocol over stdin/stdout.
+# Prefer a multi-stage build and pin base images so Dependabot can keep them current.
+#
+# Multi-arch (amd64 + arm64) images are built via the reusable harness-ci.yml workflow;
+# if your toolchain builds multi-arch natively (Go, .NET), set `qemu: false` in .github/workflows/build.yml.
+FROM alpine:3 AS example
+CMD ["false"]

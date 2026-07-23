@@ -48,6 +48,9 @@ jobs:
   ci:
     name: Build
     needs: meta
+    # The template repository itself has no real harness to build.
+    # Repositories created from it do, so this always runs for them.
+    if: github.repository != 'bowtie-json-schema/test-harness-template'
     permissions:
       id-token: write # needed for build provenance attestation
       contents: read # needed for actions/checkout
