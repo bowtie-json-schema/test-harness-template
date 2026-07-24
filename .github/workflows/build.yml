@@ -74,11 +74,13 @@ jobs:
     # When the freshly built version differs from what was previously
     # published, cut a release (and therefore a git tag) pinned to the previous
     # commit so `build-all` can rebuild that historical version on demand.
+    # Skipped on a repository's first push, when there is no previous commit.
     if: |
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main')
         || (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]')
       )
+      && github.event.before != '0000000000000000000000000000000000000000'
       && needs.meta.outputs.latest-version != ''
       && needs.ci.outputs.current-version != needs.meta.outputs.latest-version
       && !cancelled()
