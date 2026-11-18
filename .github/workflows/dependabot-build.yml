@@ -18,18 +18,45 @@ on:
 
 permissions: {}
 
-concurrency:
-  # If several Dependabot PRs land close together, only publish the latest.
-  group: dependabot-${{ github.event.workflow_run.event }}-${{ github.event.workflow_run.triggering_actor.login }}
-  cancel-in-progress: true
-
 jobs:
-  publish:
-    name: Build and Publish
+  meta:
+    name: Collect the currently published version
     if: >
       github.event.workflow_run.event == 'pull_request'
       && github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.triggering_actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      latest-version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Install Bowtie
+        uses: bowtie-json-schema/bowtie@5e76acdd1a7e5566fde40e5856b006df0fc1daf8 # main
+
+      - name: Compute implementation name
+        id: impl
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+        run: echo "name=${GH_REPOSITORY##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute the latest published implementation version
+        id: version
+        env:
+          IMPL_NAME: ${{ steps.impl.outputs.name }}
+        run: |
+          # Empty on the very first build, before any image has been published.
+          version=$(bowtie info --implementation "${IMPL_NAME}" --format json 2>/dev/null | jq -r '.version // empty' || true)
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+          echo "Latest published version: ${version:-<none>}"
+
+  publish:
+    name: Build and Publish
+    needs: meta
+    # Only the publish is serialized, so that a run whose job is skipped, e.g.
+    # for a Dependabot PR whose build failed, can't cancel a publish in progress.
+    # If several Dependabot PRs land close together, only publish the latest.
+    concurrency:
+      group: dependabot-publish
+      cancel-in-progress: true
     permissions:
       id-token: write # needed for build provenance attestation
       contents: read # needed for actions/checkout
@@ -41,3 +68,47 @@ jobs:
       ref: ${{ github.event.workflow_run.head_sha }}
       publish: true
       is-latest: true
+
+  mark-previous-version:
+    name: Tag the previous version's release
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+
+    # As in build.yml, but only once the new version has really been published.
+    if: |
+      needs.publish.result == 'success'
+      && needs.meta.outputs.latest-version != ''
+      && needs.publish.outputs.current-version != needs.meta.outputs.latest-version
+      && github.event.workflow_run.pull_requests[0].base.sha != ''
+
+    permissions:
+      contents: write # needed to create the release
+
+    env:
+      VERSION: ${{ needs.meta.outputs.latest-version }}
+      # The base of the Dependabot PR, i.e. the last commit which built the previous version.
+      COMMIT: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+      GH_REPOSITORY: ${{ github.repository }}
+
+    steps:
+      - name: Create a release for the previous implementation version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: harness-release-${{ env.VERSION }}
+        run: |
+          # A release for this version may already exist, e.g. if an earlier
+          # build recorded the same change. Leave it alone rather than fail.
+          if gh api "/repos/${GH_REPOSITORY}/releases/tags/${TAG}" --silent 2>/dev/null; then
+            echo "::notice::${TAG} already exists, so it was left as it is."
+            exit 0
+          fi
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GH_REPOSITORY}/releases" \
+            -f "tag_name=$TAG" \
+            -f "target_commitish=$COMMIT" \
+            -f "name=$VERSION" \
+            -f "body=Automatic release for $VERSION" \
+            -F "generate_release_notes=true"
